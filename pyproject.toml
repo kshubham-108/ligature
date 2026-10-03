@@ -29,9 +29,13 @@ where = ["src"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
+# Notebooks are exploratory scratch work and are kept exactly as written.
+extend-exclude = ["notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "N"]
+# Allow the conventional ML names B, T, C and `import torch.nn.functional as F`.
+ignore = ["N806", "N812"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
