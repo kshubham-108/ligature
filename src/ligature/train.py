@@ -135,6 +135,14 @@ def write_run_info(out_dir: Path, cfg: TrainConfig, device: torch.device, dtype)
     (out_dir / "run_info.yaml").write_text(yaml.safe_dump(info, sort_keys=False), encoding="utf-8")
 
 
+def format_duration(seconds: float | None) -> str:
+    """Format seconds as h:mm:ss, or a placeholder when unknown (e.g. before any training)."""
+    if seconds is None:
+        return "-:--:--"
+    s = round(seconds)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
 def synchronize(device: torch.device) -> None:
     """Wait for queued GPU work so wall-clock timings are honest."""
     if device.type == "cuda":
@@ -197,20 +205,31 @@ def train(cfg: TrainConfig, out_dir: Path, resume: bool = False) -> float:
                 "elapsed_s": round(elapsed_before + now - t_start, 1),
             }
             logger.log(row)
+            # The ETA covers the remaining training steps only, not the evaluations still to come.
+            remaining_tokens = (cfg.max_steps - step) * cfg.tokens_per_step
+            tokens_per_sec = row["tokens_per_sec"]
+            eta = remaining_tokens / tokens_per_sec if tokens_per_sec > 0 else None
             print(
                 f"step {step:>5} | train {row['train_loss']:.4f} | val {row['val_loss']:.4f} "
                 f"| ppl {row['val_ppl']:8.2f} | lr {row['lr']:.2e} "
-                f"| {row['tokens_per_sec']:>7,} tok/s | {row['elapsed_s']:>6.1f} s"
+                f"| {tokens_per_sec:>7,} tok/s | {row['elapsed_s']:>6.1f} s "
+                f"| eta {format_duration(eta)}"
             )
-            if losses["val"] < best_val_loss:
-                best_val_loss = losses["val"]
-                progress = {
-                    "step": step,
-                    "best_val_loss": best_val_loss,
-                    "elapsed_s": row["elapsed_s"],
-                    "data_rng": data_rng.get_state(),
-                }
+
+            is_best = losses["val"] < best_val_loss
+            best_val_loss = min(best_val_loss, losses["val"])
+            progress = {
+                "step": step,
+                "best_val_loss": best_val_loss,
+                "elapsed_s": row["elapsed_s"],
+                "data_rng": data_rng.get_state(),
+            }
+            if is_best:
                 save_checkpoint(ckpt_path, model, optimizer, scaler, cfg, progress)
+            if step == cfg.max_steps:
+                # Keep the final weights even when they are not the best, e.g. to train further.
+                final_path = out_dir / "ckpt_final.pt"
+                save_checkpoint(final_path, model, optimizer, scaler, cfg, progress)
             # Restart the throughput clock after evaluating so eval time is not counted.
             t_last, tokens_since_last = time.perf_counter(), 0
         if step == cfg.max_steps:

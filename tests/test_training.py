@@ -8,7 +8,14 @@ import torch
 from ligature.config import TrainConfig, load_config
 from ligature.model import GPT, GPTConfig
 from ligature.tokenizer import Tokenizer
-from ligature.train import configure_optimizer, get_lr, load_checkpoint, save_checkpoint, train
+from ligature.train import (
+    configure_optimizer,
+    format_duration,
+    get_lr,
+    load_checkpoint,
+    save_checkpoint,
+    train,
+)
 
 TINY_CONFIG = Path(__file__).resolve().parents[1] / "configs" / "tiny.yaml"
 
@@ -50,6 +57,7 @@ def pattern_data(tmp_path: Path) -> Path:
 
 
 def test_tiny_config_trains_ten_steps_and_loss_falls(pattern_data: Path, tmp_path: Path) -> None:
+    # tiny.yaml evaluates every 20 steps, so step 10 is logged only because it is the last one.
     cfg = load_config(TINY_CONFIG, ["--data_dir", str(pattern_data), "--max_steps", "10"])
     out_dir = tmp_path / "run"
     train(cfg, out_dir)
@@ -58,5 +66,13 @@ def test_tiny_config_trains_ten_steps_and_loss_falls(pattern_data: Path, tmp_pat
         rows = list(csv.DictReader(f))
     assert [int(r["step"]) for r in rows] == [0, 10]
     assert float(rows[-1]["val_loss"]) < float(rows[0]["val_loss"])
-    for name in ("ckpt.pt", "config.yaml", "run_info.yaml", "tokenizer.json"):
+    for name in ("ckpt.pt", "ckpt_final.pt", "config.yaml", "run_info.yaml", "tokenizer.json"):
         assert (out_dir / name).exists()
+    _, final = load_checkpoint(out_dir / "ckpt_final.pt", torch.device("cpu"))
+    assert final["step"] == 10
+
+
+def test_format_duration() -> None:
+    assert format_duration(None) == "-:--:--"
+    assert format_duration(59.6) == "0:01:00"
+    assert format_duration(3 * 3600 + 25 * 60 + 7) == "3:25:07"
