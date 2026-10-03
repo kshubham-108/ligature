@@ -1,0 +1,7 @@
+device,device_name,torch_threads,new_tokens,use_cache,median_s,ms_per_token,tokens_per_sec,kv_cache_bytes
+cpu,13th Gen Intel(R) Core(TM) i7-1355U,10,64,True,1.0657,16.652,60.1,4718592
+cpu,13th Gen Intel(R) Core(TM) i7-1355U,10,64,False,2.09,32.656,30.6,0
+cpu,13th Gen Intel(R) Core(TM) i7-1355U,10,128,True,2.5069,19.585,51.1,4718592
+cpu,13th Gen Intel(R) Core(TM) i7-1355U,10,128,False,7.0483,55.065,18.2,0
+cpu,13th Gen Intel(R) Core(TM) i7-1355U,10,255,True,4.7261,18.534,54.0,4718592
+cpu,13th Gen Intel(R) Core(TM) i7-1355U,10,255,False,22.1555,86.884,11.5,0

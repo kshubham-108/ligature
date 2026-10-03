@@ -56,6 +56,34 @@ class RotaryEmbedding(nn.Module):
         return rotated.flatten(-2).type_as(x)  # (B, n_head, T, head_dim)
 
 
+class KVCache:
+    """Keys and values of one attention layer, pre-allocated up to block_size positions."""
+
+    def __init__(
+        self,
+        batch_size: int,
+        n_head: int,
+        block_size: int,
+        head_dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        shape = (batch_size, n_head, block_size, head_dim)
+        self.k = torch.zeros(shape, device=device, dtype=dtype)
+        self.v = torch.zeros(shape, device=device, dtype=dtype)
+        self.length = 0  # positions filled so far, which is also the next token's position
+
+    def append(self, k: torch.Tensor, v: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Store k, v (B, n_head, T, head_dim); return all keys and values cached so far."""
+        end = self.length + k.size(2)
+        if end > self.k.size(2):
+            raise ValueError(f"KV-cache full: {end} positions exceed block_size {self.k.size(2)}")
+        self.k[:, :, self.length : end] = k
+        self.v[:, :, self.length : end] = v
+        self.length = end
+        return self.k[:, :, :end], self.v[:, :, :end]  # (B, n_head, end, head_dim) views
+
+
 class CausalSelfAttention(nn.Module):
     """Multi-head causal self-attention with an explicit path and an SDPA path."""
 
@@ -77,32 +105,49 @@ class CausalSelfAttention(nn.Module):
         mask = torch.tril(torch.ones(config.block_size, config.block_size, dtype=torch.bool))
         self.register_buffer("mask", mask, persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cache: KVCache | None = None) -> torch.Tensor:
         B, T, C = x.shape
+        # Absolute position of the first token in x: the number of positions already cached.
+        start = cache.length if cache is not None else 0
         q, k, v = self.qkv(x).split(C, dim=2)  # (B, T, C) each
         q = q.view(B, T, self.n_head, self.head_dim).transpose(1, 2)  # (B, n_head, T, head_dim)
         k = k.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         v = v.view(B, T, self.n_head, self.head_dim).transpose(1, 2)
         if self.rope is not None:
-            q, k = self.rope(q), self.rope(k)
+            q, k = self.rope(q, start), self.rope(k, start)
+        if cache is not None:
+            k, v = cache.append(k, v)  # (B, n_head, start + T, head_dim)
 
         if self.use_sdpa:
-            dropout_p = self.dropout if self.training else 0.0
-            y = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
+            y = self._sdpa_attention(q, k, v, start)
         else:
-            y = self._explicit_attention(q, k, v)
+            y = self._explicit_attention(q, k, v, start)
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)  # (B, T, n_head, head_dim) -> (B, T, C)
         return self.resid_dropout(self.proj(y))
 
-    def _explicit_attention(
-        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor
+    def _sdpa_attention(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, start: int
     ) -> torch.Tensor:
         T = q.size(-2)
+        dropout_p = self.dropout if self.training else 0.0
+        if start == 0:
+            return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
+        # With a cache, is_causal=True would align its mask to the top-left of the (T, start + T)
+        # score matrix and hide most of the cache. One new token may see every cached position,
+        # so it needs no mask; a longer chunk needs its rows of the causal mask.
+        mask = None if T == 1 else self.mask[start : start + T, : start + T]
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=dropout_p)
+
+    def _explicit_attention(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, start: int
+    ) -> torch.Tensor:
+        T, T_k = q.size(-2), k.size(-2)  # T_k = start + T keys, cached ones included
         # Dividing by sqrt(head_dim) keeps score variance near 1 when q and k have unit variance,
         # so the softmax does not saturate and its gradients do not vanish.
-        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, n_head, T, T)
-        att = att.masked_fill(~self.mask[:T, :T], float("-inf"))
+        att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (B, n_head, T, T_k)
+        # Query i sits at absolute position start + i, so it uses that row of the causal mask.
+        att = att.masked_fill(~self.mask[start : start + T, :T_k], float("-inf"))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
         return att @ v  # (B, n_head, T, head_dim)
@@ -132,8 +177,8 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.d_model, bias=config.bias)
         self.mlp = MLP(config)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln_1(x))
+    def forward(self, x: torch.Tensor, cache: KVCache | None = None) -> torch.Tensor:
+        x = x + self.attn(self.ln_1(x), cache)
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -186,20 +231,39 @@ class GPT(nn.Module):
             n -= self.pos_emb.weight.numel()
         return n
 
+    def make_caches(self, batch_size: int, device: torch.device) -> list[KVCache]:
+        """One empty KV-cache per layer, each holding up to block_size positions."""
+        c = self.config
+        dtype = self.tok_emb.weight.dtype
+        return [
+            KVCache(batch_size, c.n_head, c.block_size, c.head_dim, device, dtype)
+            for _ in range(c.n_layer)
+        ]
+
     def forward(
-        self, idx: torch.Tensor, targets: torch.Tensor | None = None
+        self,
+        idx: torch.Tensor,
+        targets: torch.Tensor | None = None,
+        caches: list[KVCache] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Return logits (B, T, vocab_size) and, given targets (B, T), the mean cross-entropy."""
+        """Return logits (B, T, vocab_size) and, given targets (B, T), the mean cross-entropy.
+
+        With caches, idx holds only the new tokens, which continue after the cached positions.
+        """
         B, T = idx.shape
-        if T > self.config.block_size:
-            raise ValueError(f"sequence length {T} exceeds block_size {self.config.block_size}")
+        start = caches[0].length if caches is not None else 0
+        if start + T > self.config.block_size:
+            raise ValueError(
+                f"sequence length {start + T} exceeds block_size {self.config.block_size}"
+            )
 
         x = self.tok_emb(idx)  # (B, T, d_model)
         if self.pos_emb is not None:
-            x = x + self.pos_emb(torch.arange(T, device=idx.device))  # (T, d_model) broadcasts
+            positions = torch.arange(start, start + T, device=idx.device)
+            x = x + self.pos_emb(positions)  # (T, d_model) broadcasts over B
         x = self.drop(x)
-        for block in self.blocks:
-            x = block(x)
+        for i, block in enumerate(self.blocks):
+            x = block(x, caches[i] if caches is not None else None)
         logits = self.lm_head(self.ln_f(x))  # (B, T, vocab_size)
 
         loss = None
@@ -207,3 +271,62 @@ class GPT(nn.Module):
             # Flatten to (B * T, vocab_size) and (B * T,): one classification per position.
             loss = F.cross_entropy(logits.view(B * T, -1), targets.view(B * T))
         return logits, loss
+
+    @torch.no_grad()
+    def generate(
+        self,
+        idx: torch.Tensor,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        use_cache: bool = True,
+        seed: int | None = None,
+    ) -> torch.Tensor:
+        """Extend idx (B, T) by up to max_new_tokens, stopping when it reaches block_size."""
+        B, T = idx.shape
+        if T > self.config.block_size:
+            raise ValueError(f"prompt length {T} exceeds block_size {self.config.block_size}")
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=idx.device).manual_seed(seed)
+        was_training = self.training
+        self.eval()
+
+        caches = self.make_caches(B, idx.device) if use_cache else None
+        new_tokens = idx  # with a cache, the first step feeds the whole prompt to fill it
+        for _ in range(min(max_new_tokens, self.config.block_size - T)):
+            logits, _ = self(new_tokens if use_cache else idx, caches=caches)
+            next_token = sample_next_token(logits[:, -1, :], temperature, top_k, top_p, generator)
+            idx = torch.cat((idx, next_token), dim=1)  # (B, T + 1)
+            new_tokens = next_token  # (B, 1)
+
+        self.train(was_training)
+        return idx
+
+
+def sample_next_token(
+    logits: torch.Tensor,
+    temperature: float,
+    top_k: int | None = None,
+    top_p: float | None = None,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Pick one token per row of logits (B, vocab_size); temperature 0 means greedy."""
+    if temperature == 0:
+        return logits.argmax(dim=-1, keepdim=True)  # (B, 1)
+    logits = logits / temperature
+    if top_k is not None:
+        kth_largest = torch.topk(logits, min(top_k, logits.size(-1))).values[:, -1:]  # (B, 1)
+        logits = logits.masked_fill(logits < kth_largest, float("-inf"))
+    if top_p is not None:
+        # Nucleus sampling: keep the smallest set of most likely tokens whose probabilities
+        # reach top_p. A token is dropped once the tokens ranked above it already reach top_p,
+        # so the most likely token is always kept.
+        sorted_logits, order = logits.sort(dim=-1, descending=True)
+        probs = sorted_logits.softmax(dim=-1)
+        mass_before = probs.cumsum(dim=-1) - probs
+        sorted_logits = sorted_logits.masked_fill(mass_before >= top_p, float("-inf"))
+        logits = torch.full_like(logits, float("-inf")).scatter(-1, order, sorted_logits)
+    probs = logits.softmax(dim=-1)
+    return torch.multinomial(probs, num_samples=1, generator=generator)  # (B, 1)
