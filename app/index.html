@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ligature</title>
+  <style>
+    :root { color-scheme: light dark; --ink: #0b0b0b; --muted: #52514e; --line: #c3c2b7; --bg: #fcfcfb; }
+    @media (prefers-color-scheme: dark) {
+      :root { --ink: #ffffff; --muted: #c3c2b7; --line: #383835; --bg: #1a1a19; }
+    }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 42rem; margin: 0 auto; padding: 2rem 1rem; }
+    h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+    p.lead { color: var(--muted); margin: 0 0 1.5rem; }
+    textarea, input, button { font: inherit; color: inherit; background: transparent; }
+    textarea { width: 100%; box-sizing: border-box; min-height: 5rem; padding: 0.5rem;
+               border: 1px solid var(--line); border-radius: 6px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; margin: 0.75rem 0 1.5rem; }
+    label { display: flex; flex-direction: column; font-size: 0.875rem; color: var(--muted); }
+    input { width: 6rem; padding: 0.25rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; }
+    button { padding: 0.5rem 1.25rem; border: 1px solid var(--ink); border-radius: 6px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    #output { white-space: pre-wrap; min-height: 6rem; }
+    #status { color: var(--muted); font-size: 0.875rem; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Ligature</h1>
+  <p class="lead">A small GPT trained from scratch on TinyStories. Give it the start of a story.</p>
+
+  <textarea id="prompt" aria-label="Prompt">Once upon a time</textarea>
+  <div class="controls">
+    <label>Max new tokens <input id="max_new_tokens" type="number" min="1" max="1024" value="200"></label>
+    <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.8"></label>
+    <label>Top-k <input id="top_k" type="number" min="1" placeholder="off"></label>
+    <button id="go">Generate</button>
+  </div>
+
+  <div id="output" aria-live="polite"></div>
+  <p id="status"></p>
+</main>
+<script>
+  const button = document.getElementById("go");
+  const output = document.getElementById("output");
+  const status = document.getElementById("status");
+
+  button.addEventListener("click", async () => {
+    const topK = document.getElementById("top_k").value;
+    const body = {
+      prompt: document.getElementById("prompt").value,
+      max_new_tokens: Number(document.getElementById("max_new_tokens").value),
+      temperature: Number(document.getElementById("temperature").value),
+      top_k: topK === "" ? null : Number(topK),
+    };
+    button.disabled = true;
+    status.textContent = "Generating...";
+    try {
+      const response = await fetch("/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        const detail = Array.isArray(data.detail) ? data.detail.map(d => d.msg).join("; ") : data.detail;
+        throw new Error(detail || response.statusText);
+      }
+      output.textContent = data.text;
+      status.textContent = `${data.new_tokens} tokens at ${data.tokens_per_sec} tokens/sec`;
+    } catch (error) {
+      status.textContent = `Error: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

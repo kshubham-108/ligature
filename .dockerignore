@@ -1,0 +1,14 @@
+data/
+runs/
+.venv/
+notebooks/
+
+# Not needed in the image, and they keep the build context small.
+.git/
+.github/
+results/
+tests/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/

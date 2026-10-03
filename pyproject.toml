@@ -37,6 +37,11 @@ select = ["E", "F", "W", "I", "UP", "B", "N"]
 # Allow the conventional ML names B, T, C and `import torch.nn.functional as F`.
 ignore = ["N806", "N812"]
 
+[tool.ruff.lint.isort]
+known-first-party = ["ligature", "app"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Lets tests import the app package at the repo root, whichever way pytest is started.
+pythonpath = ["."]
 addopts = "-ra"
