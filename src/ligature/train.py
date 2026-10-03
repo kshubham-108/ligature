@@ -124,13 +124,16 @@ def open_log(path: Path, resume_step: int | None) -> CSVLogger:
     return logger
 
 
-def write_run_info(out_dir: Path, cfg: TrainConfig, device: torch.device, dtype) -> None:
+def write_run_info(
+    out_dir: Path, cfg: TrainConfig, model: GPT, device: torch.device, dtype
+) -> None:
     cfg.to_yaml(out_dir / "config.yaml")
     info = {
         "torch_version": str(torch.__version__),  # a str subclass yaml cannot dump
         "device": str(device),
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
         "precision": {torch.bfloat16: "bf16", torch.float16: "fp16", None: "fp32"}[dtype],
+        "non_embedding_params": model.num_params(),
     }
     (out_dir / "run_info.yaml").write_text(yaml.safe_dump(info, sort_keys=False), encoding="utf-8")
 
@@ -182,7 +185,7 @@ def train(cfg: TrainConfig, out_dir: Path, resume: bool = False) -> float:
         best_val_loss = checkpoint["best_val_loss"]
         elapsed_before = checkpoint["elapsed_s"]
     shutil.copy(data_dir / "tokenizer.json", out_dir / "tokenizer.json")
-    write_run_info(out_dir, cfg, device, dtype)
+    write_run_info(out_dir, cfg, model, device, dtype)
     logger = open_log(out_dir / "log.csv", start_step if resume else None)
 
     train_model = torch.compile(model) if cfg.compile else model

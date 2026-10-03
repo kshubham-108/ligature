@@ -1,6 +1,7 @@
 """Download TinyStories, train the tokeniser and encode both splits to uint16 token files."""
 
 import argparse
+import json
 import time
 from multiprocessing import Pool
 from pathlib import Path
@@ -26,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-mb", type=float, default=300, help="MB of the train file to use")
     parser.add_argument("--tok-train-mb", type=float, default=20, help="MB to train the tokeniser")
     parser.add_argument("--vocab-size", type=int, default=4096)
+    parser.add_argument("--stats-out", type=Path, default=Path("results/data_stats.json"))
     parser.add_argument(
         "--local",
         action="store_true",
@@ -110,6 +112,13 @@ def main() -> None:
         f"in {tok_seconds:.1f} s"
     )
 
+    stats = {
+        "local": args.local,
+        "train_mb": None if args.local else args.train_mb,
+        "vocab_size": tokenizer.vocab_size,
+        "tokenizer_train_mb": round(tok_mb, 2),
+        "tokenizer_train_seconds": round(tok_seconds, 2),
+    }
     for name, split in (("train", train), ("val", val)):
         n_bytes = sum(len(s.encode("utf-8")) for s in split)
         n_tokens, seconds = encode_split(split, tokenizer_path, args.data_dir / f"{name}.bin")
@@ -117,9 +126,15 @@ def main() -> None:
             f"{name}: {len(split):,} stories, {n_bytes / MB:.1f} MB -> {n_tokens:,} tokens "
             f"in {seconds:.1f} s ({n_bytes / MB / seconds:.2f} MB/s)"
         )
-        if name == "val":
-            # Exclude the <|endoftext|> appended after each story: it stands for no input bytes.
-            print(f"val bytes per token: {n_bytes / (n_tokens - len(split)):.3f}")
+        stats[f"{name}_stories"] = len(split)
+        stats[f"{name}_tokens"] = n_tokens
+    # Exclude the <|endoftext|> appended after each story: it stands for no input bytes.
+    val_bytes = sum(len(s.encode("utf-8")) for s in val)
+    stats["val_bytes_per_token"] = round(val_bytes / (stats["val_tokens"] - len(val)), 4)
+    print(f"val bytes per token: {stats['val_bytes_per_token']:.3f}")
+
+    args.stats_out.parent.mkdir(parents=True, exist_ok=True)
+    args.stats_out.write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":
