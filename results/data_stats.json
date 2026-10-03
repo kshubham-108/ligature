@@ -1,0 +1,12 @@
+{
+  "local": false,
+  "train_mb": 300,
+  "vocab_size": 4096,
+  "tokenizer_train_mb": 20.0,
+  "tokenizer_train_seconds": 3.77,
+  "train_stories": 384130,
+  "train_tokens": 78064554,
+  "val_stories": 27630,
+  "val_tokens": 5580897,
+  "val_bytes_per_token": 3.9755
+}

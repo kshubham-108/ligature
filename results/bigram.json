@@ -1,0 +1,7 @@
+{
+  "vocab_size": 4096,
+  "train_tokens": 78064554,
+  "val_tokens": 5580897,
+  "val_loss": 3.6243,
+  "val_ppl": 37.497
+}

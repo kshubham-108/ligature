@@ -1,6 +1,7 @@
 # Data and training outputs
-data/
-runs/
+# Leading slashes anchor these to the repo root, so results/runs/ is still committed.
+/data/
+/runs/
 *.bin
 *.pt
 

@@ -135,11 +135,12 @@ def plot_scaling(runs: list[Run], bigram: dict, path: Path) -> None:
         ax.annotate(
             f"{run.name}\n{loss:.3f}",
             xy=(n, loss),
-            # Below-left of each point stays clear of a line that slopes down to the right.
-            xytext=(-8, -6),
+            # Above-right of each point stays clear of a line that slopes down to the right,
+            # and of the tick labels below.
+            xytext=(8, 6),
             textcoords="offset points",
-            ha="right",
-            va="top",
+            ha="left",
+            va="bottom",
             color=INK_SECONDARY,
             fontsize=9,
         )
