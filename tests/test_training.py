@@ -10,6 +10,7 @@ from ligature.model import GPT, GPTConfig
 from ligature.tokenizer import Tokenizer
 from ligature.train import (
     configure_optimizer,
+    export_weights,
     format_duration,
     get_lr,
     load_checkpoint,
@@ -42,6 +43,30 @@ def test_checkpoint_round_trip_gives_identical_logits(tmp_path: Path) -> None:
     idx = torch.randint(0, 64, (2, 16))
     assert torch.equal(model(idx)[0], loaded.eval()(idx)[0])
     assert GPTConfig(**checkpoint["model_config"]) == model.config
+
+
+def test_fp16_export_drops_optimiser_state_and_keeps_logits_close(tmp_path: Path) -> None:
+    torch.manual_seed(0)
+    cfg = TrainConfig(n_layer=2, n_head=2, d_model=32, block_size=16)
+    model = GPT(cfg.model_config(vocab_size=64))
+    optimizer = configure_optimizer(model, cfg)
+    idx = torch.randint(0, 64, (2, 16))
+    model(idx, targets=idx)[1].backward()
+    optimizer.step()  # gives AdamW its two moment buffers per parameter
+    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    ckpt_path, weights_path = tmp_path / "ckpt.pt", tmp_path / "model.pt"
+    save_checkpoint(ckpt_path, model, optimizer, scaler, cfg, {"step": 1})
+
+    export_weights(ckpt_path, weights_path)
+    exported = torch.load(weights_path)
+    assert set(exported) == {"model", "model_config"}
+    assert all(t.dtype == torch.float16 for t in exported["model"].values())
+    # fp16 halves the weights and the moments are gone, so well under a quarter of the size.
+    assert weights_path.stat().st_size < ckpt_path.stat().st_size / 4
+
+    loaded, _ = load_checkpoint(weights_path, torch.device("cpu"))
+    assert loaded.lm_head.weight is loaded.tok_emb.weight
+    torch.testing.assert_close(loaded.eval()(idx)[0], model.eval()(idx)[0], rtol=1e-2, atol=1e-3)
 
 
 @pytest.fixture

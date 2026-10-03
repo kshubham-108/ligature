@@ -105,11 +105,21 @@ def save_checkpoint(
 
 
 def load_checkpoint(path: str | Path, device: torch.device) -> tuple[GPT, dict]:
-    """Rebuild the model from a checkpoint; also return the raw checkpoint dict."""
+    """Rebuild the model from a checkpoint or a weights-only export; also return the raw dict."""
     checkpoint = torch.load(path, map_location=device)
     model = GPT(GPTConfig(**checkpoint["model_config"])).to(device)
+    # load_state_dict copies into the fp32 parameters, so an fp16 export loads as fp32.
     model.load_state_dict(checkpoint["model"])
     return model, checkpoint
+
+
+def export_weights(ckpt_path: str | Path, out_path: str | Path) -> None:
+    """Save the model weights in fp16 with the model config, without any optimiser state."""
+    model, _ = load_checkpoint(ckpt_path, torch.device("cpu"))
+    # Converting the whole module, not each tensor in the state dict, keeps the tied embedding
+    # and LM head as one tensor, so torch.save stores it once.
+    model.half()
+    torch.save({"model": model.state_dict(), "model_config": asdict(model.config)}, out_path)
 
 
 def open_log(path: Path, resume_step: int | None) -> CSVLogger:

@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download
 from pydantic import BaseModel, Field
 
 from ligature.model import GPT
@@ -18,6 +18,8 @@ from ligature.train import load_checkpoint
 from ligature.utils import get_device
 
 INDEX_HTML = Path(__file__).with_name("index.html")
+# The fp16 weights-only export from scripts/push_to_hub.py first, then a full training checkpoint.
+WEIGHT_FILES = ("model.pt", "ckpt.pt")
 
 Loader = Callable[[], tuple[GPT, Tokenizer]]
 
@@ -35,16 +37,26 @@ class GenerateResponse(BaseModel):
     tokens_per_sec: float
 
 
+def first_available(names: tuple[str, ...], exists: Callable[[str], bool]) -> str:
+    for name in names:
+        if exists(name):
+            return name
+    raise FileNotFoundError(f"none of {names} found")
+
+
 def load_from_env() -> tuple[GPT, Tokenizer]:
-    """Load ckpt.pt and tokenizer.json from the HF_REPO_ID repo if set, else from MODEL_DIR."""
+    """Load the weights and tokenizer.json from the HF_REPO_ID repo if set, else from MODEL_DIR."""
     repo_id = os.environ.get("HF_REPO_ID")
     if repo_id:
-        ckpt_path = Path(hf_hub_download(repo_id, "ckpt.pt"))
+        api = HfApi()
+        weights = first_available(WEIGHT_FILES, lambda name: api.file_exists(repo_id, name))
+        weights_path = Path(hf_hub_download(repo_id, weights))
         tokenizer_path = Path(hf_hub_download(repo_id, "tokenizer.json"))
     else:
         model_dir = Path(os.environ.get("MODEL_DIR", "runs/base"))
-        ckpt_path, tokenizer_path = model_dir / "ckpt.pt", model_dir / "tokenizer.json"
-    model, _ = load_checkpoint(ckpt_path, get_device())
+        weights = first_available(WEIGHT_FILES, lambda name: (model_dir / name).exists())
+        weights_path, tokenizer_path = model_dir / weights, model_dir / "tokenizer.json"
+    model, _ = load_checkpoint(weights_path, get_device())
     return model.eval(), Tokenizer.load(tokenizer_path)
 
 
