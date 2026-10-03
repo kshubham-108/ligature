@@ -1,0 +1,28 @@
+# CPU smoke test; must train in under 60 seconds because CI depends on it.
+data_dir: data
+seed: 1337
+device: cpu
+
+n_layer: 2
+n_head: 2
+d_model: 64
+block_size: 64
+dropout: 0.0
+pos_encoding: rope
+bias: false
+use_sdpa: false
+
+batch_size: 16
+grad_accum_steps: 2
+max_steps: 60
+learning_rate: 3.0e-3
+min_lr: 3.0e-4
+warmup_steps: 6
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+compile: false
+
+eval_interval: 20
+eval_iters: 10

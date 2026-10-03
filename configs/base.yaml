@@ -1,0 +1,28 @@
+# Main run: 6 x 384 with RoPE. 4000 steps x 64 x 256 = 65.5M tokens.
+data_dir: data
+seed: 1337
+device: auto
+
+n_layer: 6
+n_head: 6
+d_model: 384
+block_size: 256
+dropout: 0.0
+pos_encoding: rope
+bias: false
+use_sdpa: true
+
+batch_size: 64
+grad_accum_steps: 1
+max_steps: 4000
+learning_rate: 1.0e-3
+min_lr: 1.0e-4
+warmup_steps: 200
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+grad_clip: 1.0
+compile: false
+
+eval_interval: 250
+eval_iters: 50
