@@ -1,5 +1,7 @@
 # Ligature
 
+Try it on Hugging Face Spaces: [huggingface.co/spaces/JPSProject/ligature](https://huggingface.co/spaces/JPSProject/ligature)
+
 Ligature is a GPT-style language model that I wrote from scratch in PyTorch and trained on TinyStories: my own byte-level BPE tokeniser, the transformer, the training loop, a KV-cache for generation, controlled experiments, tests, CI and a small Dockerised API. The name comes from typographic ligatures, where a pair of letters such as f and i is fused into a single glyph; a BPE tokeniser builds its vocabulary the same way, by repeatedly fusing the most frequent pair of symbols into one.
 
 ## Architecture
